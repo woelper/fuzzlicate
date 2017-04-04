@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+import argparse
+import json
+import hashlib
+import os
+import io
+
+try:
+    import xxhash
+    HAS_XXHASH = True
+except ImportError:
+    print 'consider installing xxhash on your system to speed up indexing.'
+    HAS_XXHASH = False
+
+def checksum(filepath):
+    """
+    Produce a checksum for a file
+    """
+    if HAS_XXHASH:
+        # hash_ = hashlib.sha256()
+        hash_ = xxhash.xxh64()
+    else:
+        hash_ = hashlib.md5()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hash_.update(chunk)
+    return hash_.hexdigest()
+
+
+class DupeFinder(object):
+    def __init__(self):
+        self.theirs = {}
+        self.ours = {}
+        self.output_name = 'ours.json'
+
+    def dump_ours(self):
+        json_string = unicode(json.dumps(self.ours, ensure_ascii=False))
+
+        with io.open(self.output_name, 'w', encoding='utf-8') as f:
+            f.write(json_string)
+
+    def compare(self):
+        for fhash, filenames in self.ours.iteritems():
+            if fhash in self.theirs:
+                yield {'ours': filenames, 'theirs': self.theirs[fhash]}
+
+    def inspect(self, rootpath):
+        filedb = {}
+        num_total_files = 0.0
+
+        for root, dirs, files in os.walk(rootpath):
+            for file_ in files:
+                num_total_files += 1
+
+        print 'Scanning', int(num_total_files), 'files'
+
+        i = 1.0
+        for root, dirs, files in os.walk(rootpath):
+            for file_ in files:
+                #fullpath = os.path.join(root, file_)
+                try:
+                    fullpath = unicode(os.path.join(root, file_), 'utf-8')
+                except Exception as err:
+                    print '{} in {} can not be converted to unicode.'.format(file_, root)
+                    continue
+
+                if not os.path.isfile(fullpath):
+                    print '[WARN] Not a file: {}'.format(fullpath)
+                    continue
+
+                i += 1
+                if i%100 == 99:
+                    print '{}% done'.format(round(i/num_total_files,3)*100)
+                fhash = unicode(checksum(fullpath), 'utf-8')
+                if fhash not in filedb:
+                    filedb[fhash] = [fullpath]
+                else:
+                    filedb[fhash].append(fullpath)
+        return filedb
+
+
+def main():
+    # Parse the arguments //////////////////////////////////////////////////////////
+    parser = argparse.ArgumentParser(prog='SUBCOMMAND')
+    # subparsers = parser.add_subparsers(dest='action')
+    # parser_one = subparsers.add_parser('action_one')
+    # parser_one.add_argument('one_argument', type=str)
+    # parser_pull = subparsers.add_parser('pull')
+    parser.add_argument('--root-dir', type=str)
+    parser.add_argument('--our-db', type=str)
+    parser.add_argument('--their-db', type=str)
+    parser.add_argument('--dump', action='store_true', help='dump list', default=False)
+
+    args = parser.parse_args()
+
+
+
+    # Handle the arguments /////////////////////////////////////////////////////////
+    df = DupeFinder()
+    if args.root_dir is None and args.our_db is None:
+        print 'You need to specify either --root_dir <dir> or --our_db <dbfile>'
+        return 1
+
+    if args.root_dir is not None:
+        local_root = args.root_dir
+        if not os.path.isdir(local_root):
+            print 'Not a dir:', local_root
+            return
+        df.ours = df.inspect(local_root)
+
+    if args.our_db is not None:
+        if not os.path.isfile(args.our_db):
+            print 'No such file:', args.our_db
+            return
+        with open(args.our_db) as logfile:
+            df.ours = json.load(logfile)
+
+    if args.their_db is not None:
+        if not os.path.isfile(args.their_db):
+            print 'No such file:', args.their_db
+            return
+        with open(args.their_db) as logfile:
+            df.theirs = json.load(logfile)
+
+        print 'comparing ours against theirs:'
+        for dupe_dict in df.compare():
+            print '\n--------------------------------------------------'
+            for k, filenames in dupe_dict.iteritems():
+                print k, '/'.join(filenames)
+        
+        return
+
+
+    dupes = [(f,df.ours[f]) for f in df.ours.keys() if len(df.ours[f]) > 1]
+    if dupes:
+        print '---'
+        for fhash, filenames in dupes:
+            for f in filenames:
+                print '\t', f
+    else:
+        print 'No duplicates'
+
+    if args.dump:
+        df.dump_ours()
+
+    # print
+    # if args.action == 'action_one':
+    #         print 'action one called with arg', args.one_argument
+    # elif args.action == 'pull':
+    #     print 'pull action called'
+
+
+
+if __name__ == '__main__':
+    main()
