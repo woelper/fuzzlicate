@@ -3,7 +3,9 @@ import argparse
 import json
 import hashlib
 import os
+import sys
 import io
+from multiprocessing.dummy import Pool as ThreadPool
 
 try:
     import xxhash
@@ -46,15 +48,22 @@ class DupeFinder(object):
 
     def inspect(self, rootpath):
         filedb = {}
-        num_total_files = 0.0
+        filelist = []
+        done = []
 
-        for root, dirs, files in os.walk(rootpath):
-            for file_ in files:
-                num_total_files += 1
-
-        print 'Scanning', int(num_total_files), 'files'
-
-        i = 1.0
+        def add_hash(fullpath):
+            # print fullpath
+            done.append(fullpath)
+            if len(done)%100 == 99:
+                print '{}% done'.format(round(float(len(done))/len(filelist), 3)*100)
+            # return
+            fhash = unicode(checksum(fullpath), 'utf-8')
+            if fhash not in filedb:
+                filedb[fhash] = [fullpath]
+            else:
+                filedb[fhash].append(fullpath)
+            
+        #build list
         for root, dirs, files in os.walk(rootpath):
             for file_ in files:
                 #fullpath = os.path.join(root, file_)
@@ -68,37 +77,36 @@ class DupeFinder(object):
                     print '[WARN] Not a file: {}'.format(fullpath)
                     continue
 
-                i += 1
-                if i%100 == 99:
-                    print '{}% done'.format(round(i/num_total_files,3)*100)
-                fhash = unicode(checksum(fullpath), 'utf-8')
-                if fhash not in filedb:
-                    filedb[fhash] = [fullpath]
-                else:
-                    filedb[fhash].append(fullpath)
+                filelist.append(fullpath)
+
+
+        pool = ThreadPool(6)
+        pool.map(add_hash, filelist)
+
         return filedb
+
 
 
 def main():
     # Parse the arguments //////////////////////////////////////////////////////////
     parser = argparse.ArgumentParser(prog='SUBCOMMAND')
-    # subparsers = parser.add_subparsers(dest='action')
-    # parser_one = subparsers.add_parser('action_one')
-    # parser_one.add_argument('one_argument', type=str)
-    # parser_pull = subparsers.add_parser('pull')
-    parser.add_argument('--root-dir', type=str)
+    parser.add_argument('--root-dir', type=str, help='Root dir to traverse')
     parser.add_argument('--our-db', type=str)
     parser.add_argument('--their-db', type=str)
+    parser.add_argument('--delete', action='store_true', help='Delete duplicates when comparing to THEIRS', default=False)
+    parser.add_argument('--dontcare', action='store_true', help='Do not confirm on deletion', default=False)
     parser.add_argument('--dump', action='store_true', help='dump list', default=False)
 
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 1
+
     args = parser.parse_args()
-
-
 
     # Handle the arguments /////////////////////////////////////////////////////////
     df = DupeFinder()
     if args.root_dir is None and args.our_db is None:
-        print 'You need to specify either --root_dir <dir> or --our_db <dbfile>'
+        print 'You need to specify either --root-dir <dir> or --our-db <dbfile>'
         return 1
 
     if args.root_dir is not None:
@@ -127,27 +135,35 @@ def main():
             print '\n--------------------------------------------------'
             for k, filenames in dupe_dict.iteritems():
                 print k, '/'.join(filenames)
-        
+
+            if args.their_db is not None:
+                if args.delete:
+                    print 'D', ''.join(dupe_dict['ours']), '???'
+                    if not args.dontcare:
+                        answer = raw_input('[y/N]\n')
+                        if answer == 'y' or args.dontcare:
+                            for f in dupe_dict['ours']:
+                                os.unlink(f)
+                    else:
+                        for f in dupe_dict['ours']:
+                            os.unlink(f)
         return
 
-
-    dupes = [(f,df.ours[f]) for f in df.ours.keys() if len(df.ours[f]) > 1]
+    dupes = [(f, df.ours[f]) for f in df.ours.keys() if len(df.ours[f]) > 1]
     if dupes:
         print '---'
         for fhash, filenames in dupes:
+            print '['
             for f in filenames:
                 print '\t', f
+            print ']'
+    
     else:
         print 'No duplicates'
 
     if args.dump:
         df.dump_ours()
 
-    # print
-    # if args.action == 'action_one':
-    #         print 'action one called with arg', args.one_argument
-    # elif args.action == 'pull':
-    #     print 'pull action called'
 
 
 
